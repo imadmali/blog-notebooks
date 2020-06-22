@@ -1,0 +1,174 @@
+---
+title: "Problems with P-values"
+author: "Imad Ali"
+date: "6/21/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Two things that have come up often in my experience in industry is how p-values are interpreted (often erroneously) and their behavior under big data. (Because of these issues I try to use alternative approaches to inference.) A great example to work off of to understand these issues is a simple A/B test where we want to compare the treatement group (A) against the control group (B) and evaluate whether there is a difference between the two. 
+
+## Interpretation
+
+Functions to compute Welch's t-test and associated p-value.
+
+```{r}
+driver_welch_ttest <- function(g1_N,
+                               g2_N,
+                               g1_mean,
+                               g2_mean,
+                               g1_var,
+                               g2_var) {
+  g1_var_N <- g1_var / g1_N
+  g2_var_N <- g2_var / g2_N
+  tstat <- (g1_mean - g2_mean) / sqrt(g1_var_N + g2_var_N)
+  denom <- (g1_var_N ^ 2 / (g1_N - 1)) + (g2_var_N ^ 2 / (g2_N - 1))
+  degfree <- (g1_var_N + g2_var_N) ^ 2 / denom
+  pvalue <- 2 * pt(-abs(tstat), degfree, 0)
+  result <- list(tstat = tstat,
+                 degfree = degfree,
+                 pvalue = pvalue)
+  return(result)
+}
+
+welch_ttest <- function(g1, g2) {
+  g1_mean <- mean(g1)
+  g2_mean <- mean(g2)
+  g1_N <- length(g1)
+  g2_N <- length(g2)
+  g1_var <- var(g1)
+  g2_var <- var(g2)
+  result <- driver_welch_ttest(g1_N, g2_N,
+                               g1_mean, g2_mean,
+                               g1_var, g2_var)
+  class(result) <- "welch_ttest"
+  return(result)
+}
+```
+
+Applying the function above to simulated data.
+
+```{r}
+# a <- rnorm(10, 10, 1)
+# b <- rnorm(10, 10.5, 1)
+a <-
+  c(
+    11.08954,
+    10.57027,
+    10.59684,
+    8.993971,
+    10.4428,
+    9.655154,
+    11.18748,
+    9.881074,
+    10.74739,
+    11.76134
+  )
+b <-
+  c(
+    10.29069,
+    9.662908,
+    9.794825,
+    11.21004,
+    10.51539,
+    10.49349,
+    11.57189,
+    10.28759,
+    11.35425,
+    11.86643
+  )
+t.test(a, b, mu = 0)
+wttest <- welch_ttest(a, b)
+wttest
+```
+
+Plot method to visualize the results obtained above
+```{r}
+plot.welch_ttest <- function(obj) {
+  tstat <- abs(obj$tstat)
+  # data
+  tol <- 3
+  lbound <- -tstat - tol
+  rbound <- tstat + tol
+  support <- seq(lbound, rbound, length.out = 100)
+  p <- dt(support, obj$degfree, 0)
+  # plot
+  plot(support, p, type = "l")
+  abline(v = -tstat, col = "red")
+  abline(v = tstat, col = "red")
+  legend(
+    "topright",
+    c("pdf", "tstat"),
+    col = c("black", "red"),
+    pch = 15,
+    pt.cex = 2
+  )
+}
+```
+
+
+```{r}
+plot(wttest)
+```
+
+## Big Data
+
+Assume that mean and variance are fixed but sample size increases. We show this for several types of variance values.
+
+```{r}
+sizes <- seq(5, 100, by = 5)
+sim_pvalues <- c()
+sim_pvalues_svar <- c()
+sim_pvalues_lvar <- c()
+for (N in sizes) {
+  nr_wttest <- driver_welch_ttest(N, N, 10, 10.5, 1, 1)
+  nr_wttest_svar <- driver_welch_ttest(N, N, 10, 10.5, 0.5, 0.5)
+  nr_wttest_lvar <- driver_welch_ttest(N, N, 10, 10.5, 3, 3)
+  sim_pvalues <- append(sim_pvalues, nr_wttest$pvalue)
+  sim_pvalues_svar <- append(sim_pvalues_svar, nr_wttest_svar$pvalue)
+  sim_pvalues_lvar <- append(sim_pvalues_lvar, nr_wttest_lvar$pvalue)
+}
+plot(sim_pvalues, type = "l", xlab = "Sample Size", ylab = "P-Value", xaxt = "n", ylim = c(0,1))
+lines(sim_pvalues_svar, col = "blue")
+lines(sim_pvalues_lvar, col = "purple")
+axis(1, at = 1:length(sim_pvalues), labels = sizes)
+```
+
+It's unrealistic that the mean and variance would stay exactly the same as the sample size increases. 
+Let's run a similar analysis but with simulated data.
+
+```{r}
+simulate_pvalues <- function(sizes, x_mu, y_mu, x_sd, y_sd) {
+  pvalue_mean <- c()
+  pvalue_sd <- c()
+  for (N in sizes) {
+    pvalue <- c()
+    for (i in 1:1e3) {
+      x <- rnorm(N, x_mu, x_sd)
+      y <- rnorm(N, y_mu, y_sd)
+      pvalue[i] <- t.test(x, y, mu = 0)$p.value
+    }
+    pvalue_mean <- append(pvalue_mean, mean(pvalue))
+    pvalue_sd <- append(pvalue_sd, sd(pvalue))
+  }
+  result <- list(mean = pvalue_mean,
+                 sd = pvalue_sd)
+  return(result)
+}
+```
+
+```{r}
+sizes <- seq(10, 1e4, by = 100)
+sims <- simulate_pvalues(sizes, x_mu = 0.1, y_mu = 0.15, x_sd = 1, y_sd = 1)
+sims_svar <- simulate_pvalues(sizes, x_mu = 0.1, y_mu = 0.15, x_sd = 0.5, y_sd = 0.5)
+sims_lvar <- simulate_pvalues(sizes, x_mu = 0.1, y_mu = 0.15, x_sd = 3, y_sd = 3)
+
+plot(sims$mean, type = "l", ylim = c(0,1))
+lines(sims_svar$mean, col = "red")
+lines(sims_lvar$mean, col = "blue")
+```
+
+We come to a similar conclusion. P-values tend to decrease as sample sizes increase. This is behavior is intended of p-values, and the practitioner should be aware of it when making inferences.
