@@ -7,9 +7,21 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
 ```
 
-Two things that have come up often in my experience in industry is how p-values are interpreted (often erroneously) and their behavior under big data. (Because of these issues I try to use alternative approaches to inference.) A great example to work off of to understand these issues is a simple A/B test where we want to compare the treatement group (A) against the control group (B) and evaluate whether there is a difference between the two. 
+```{r}
+clean_theme <- theme(plot.background = element_rect(fill = "#FFFFFF"),
+                     panel.background = element_rect(fill = "#FFFFFF", color = "#808080"),
+                     # panel.grid.major = element_line(color = alpha("#808080",0.5)),
+                     # panel.grid.minor = element_blank(),
+                     panel.grid = element_blank(),
+                     axis.ticks = element_line(color = alpha("#808080",0.5)),
+                     legend.background = element_rect(fill = "#FFFFFF"),
+                     legend.key = element_rect(fill = "#FFFFFF"))
+```
+
+Two things that have come up often in my experience in industry is how p-values are interpreted (often erroneously) and their behavior under big data. (Because of these issues I try to use alternative approaches to inference.) A great example to work off of to understand these issues is a simple A/B test where we want to compare the treatment group (A) against the control group (B) and evaluate whether there is a "significant" difference between the two. 
 
 ## Interpretation
 
@@ -80,12 +92,20 @@ b <-
     11.35425,
     11.86643
   )
-t.test(a, b, mu = 0)
 wttest <- welch_ttest(a, b)
 wttest
 ```
 
-Plot method to visualize the results obtained above
+Let's compare it with base R's `t.test` function.
+
+```{r}
+t.test(a, b, mu = 0)
+```
+
+We get the same results.
+
+Below we have a plot method to visualize the p-value result obtained above. We do this by showing the t-distribution probability density function under the null hypothesis (i.e. arbitrary support with degrees of freedom calculated from the data and a non-centrality parameter equal to 0). The test statistic computed above is overlayed on this distribution.
+
 ```{r}
 plot.welch_ttest <- function(obj) {
   tstat <- abs(obj$tstat)
@@ -95,80 +115,176 @@ plot.welch_ttest <- function(obj) {
   rbound <- tstat + tol
   support <- seq(lbound, rbound, length.out = 100)
   p <- dt(support, obj$degfree, 0)
+  # data frames
+  plot_data <- data.frame(support = support, p = p)
+  tstat <- data.frame(x = c(-tstat,tstat), name = "tstat")
   # plot
-  plot(support, p, type = "l")
-  abline(v = -tstat, col = "red")
-  abline(v = tstat, col = "red")
-  legend(
-    "topright",
-    c("pdf", "tstat"),
-    col = c("black", "red"),
-    pch = 15,
-    pt.cex = 2
-  )
+  ttest_plot <- ggplot(data = plot_data) +
+    clean_theme +
+    theme(legend.title = element_blank()) +
+    ggtitle("T-distribution under null hypothesis with test statistics") +
+    xlab("Support") + ylab("Density") +
+    geom_line(size = 1, aes(x = support, y = p, color = "pdf")) +
+    geom_vline(aes(xintercept = x, linetype = name), color = "#0078C8", data = tstat) +
+    scale_color_manual(labels = c("pdf"), values = c("#003791"))
+    
+  return(ttest_plot)
 }
 ```
 
+The p-value defines the sum of the area from the critical value (light blue lines) to the tails of the test statistic's distribution.
 
 ```{r}
 plot(wttest)
 ```
 
-## Big Data
-
 Assume that mean and variance are fixed but sample size increases. We show this for several types of variance values.
 
 ```{r}
 sizes <- seq(5, 100, by = 5)
-sim_pvalues <- c()
-sim_pvalues_svar <- c()
-sim_pvalues_lvar <- c()
+sd_value <- c(0.5, 1, 3)
+sim_pvalues <- list()
+i <- 1
 for (N in sizes) {
-  nr_wttest <- driver_welch_ttest(N, N, 10, 10.5, 1, 1)
-  nr_wttest_svar <- driver_welch_ttest(N, N, 10, 10.5, 0.5, 0.5)
-  nr_wttest_lvar <- driver_welch_ttest(N, N, 10, 10.5, 3, 3)
-  sim_pvalues <- append(sim_pvalues, nr_wttest$pvalue)
-  sim_pvalues_svar <- append(sim_pvalues_svar, nr_wttest_svar$pvalue)
-  sim_pvalues_lvar <- append(sim_pvalues_lvar, nr_wttest_lvar$pvalue)
+  for (s in sd_value) {
+    nr_wttest <- driver_welch_ttest(N, N, 10, 10.5, s, s)
+    sim_pvalues[[i]] <- c(sample_size = N, std_dev = s, p_value = nr_wttest$pvalue)
+    i <- i + 1
+  }
 }
-plot(sim_pvalues, type = "l", xlab = "Sample Size", ylab = "P-Value", xaxt = "n", ylim = c(0,1))
-lines(sim_pvalues_svar, col = "blue")
-lines(sim_pvalues_lvar, col = "purple")
-axis(1, at = 1:length(sim_pvalues), labels = sizes)
+sim_pvalues <- do.call("rbind", sim_pvalues)
+sim_pvalues <- data.frame(sim_pvalues)
+sim_pvalues$std_dev <- factor(sim_pvalues$std_dev)
 ```
+
+```{r}
+ggplot(data = sim_pvalues, aes(x = sample_size, y = p_value, group = std_dev, color = std_dev)) +
+  clean_theme + 
+  ggtitle("P-value as sample size varies") +
+  xlab("Sample Size") + ylab("P-value") +
+  ylim(0,1) + 
+  scale_color_manual(values=c("#5880C190","#00A08890","#E9546F90"), name = "sd") +
+  geom_line(size = 1)
+```
+
+## Big Data
+
+Big data can have massive variation (depending on the industry). So let's see what the behavior is like with very large sample sizes and very large standard deviations.
+
+```{r}
+sizes <- seq(10, 1e3, by = 10)
+sd_value <- c(5, 10, 30)
+sim_pvalues <- list()
+i <- 1
+for (N in sizes) {
+  for (s in sd_value) {
+    nr_wttest <- driver_welch_ttest(N, N, 10, 10.5, s, s)
+    sim_pvalues[[i]] <- c(sample_size = N, std_dev = s, p_value = nr_wttest$pvalue)
+    i <- i + 1
+  }
+}
+sim_pvalues <- do.call("rbind", sim_pvalues)
+sim_pvalues <- data.frame(sim_pvalues)
+sim_pvalues$std_dev <- factor(sim_pvalues$std_dev)
+```
+
+```{r}
+ggplot(data = sim_pvalues, aes(x = sample_size, y = p_value, group = std_dev, color = std_dev)) +
+  clean_theme + 
+  ggtitle("P-value as (big data) sample size varies") +
+  xlab("Sample Size") + ylab("P-value") +
+  ylim(0,1) + 
+  scale_color_manual(values=c("#5880C190","#00A08890","#E9546F90"), name = "sd") +
+  geom_line(size = 1)
+```
+
+So it looks like large sample sizes can also show statistical significance, even if their respective standard deviations are large.
+
+## Simulations
 
 It's unrealistic that the mean and variance would stay exactly the same as the sample size increases. 
-Let's run a similar analysis but with simulated data.
+Below we run a similar analysis but with simulated data.
 
 ```{r}
-simulate_pvalues <- function(sizes, x_mu, y_mu, x_sd, y_sd) {
-  pvalue_mean <- c()
-  pvalue_sd <- c()
-  for (N in sizes) {
+sizes <- seq(10, 1e3, by = 10)
+sd_value <- c(3, 5, 10, 30)
+sim_pvalues <- list()
+i <- 1
+for (N in sizes) {
+  for (s in sd_value) {
     pvalue <- c()
-    for (i in 1:1e3) {
-      x <- rnorm(N, x_mu, x_sd)
-      y <- rnorm(N, y_mu, y_sd)
-      pvalue[i] <- t.test(x, y, mu = 0)$p.value
+    for (n in 1:1e3) {
+      x <- rnorm(N, 10, s)
+      y <- rnorm(N, 10.5, s)
+      nr_wttest <- welch_ttest(x, y)
+      # nr_wttest <- t.test(x, y, mu = 0)
+      pvalue[n] <- nr_wttest$pvalue
     }
-    pvalue_mean <- append(pvalue_mean, mean(pvalue))
-    pvalue_sd <- append(pvalue_sd, sd(pvalue))
+    sim_pvalues[[i]] <- c(sample_size = N, std_dev = s, p_value = mean(pvalue))
+    i <- i + 1
   }
-  result <- list(mean = pvalue_mean,
-                 sd = pvalue_sd)
-  return(result)
 }
+sim_pvalues <- do.call("rbind", sim_pvalues)
+sim_pvalues <- data.frame(sim_pvalues)
+sim_pvalues$std_dev <- factor(sim_pvalues$std_dev)
 ```
 
 ```{r}
-sizes <- seq(10, 1e4, by = 100)
-sims <- simulate_pvalues(sizes, x_mu = 0.1, y_mu = 0.15, x_sd = 1, y_sd = 1)
-sims_svar <- simulate_pvalues(sizes, x_mu = 0.1, y_mu = 0.15, x_sd = 0.5, y_sd = 0.5)
-sims_lvar <- simulate_pvalues(sizes, x_mu = 0.1, y_mu = 0.15, x_sd = 3, y_sd = 3)
-
-plot(sims$mean, type = "l", ylim = c(0,1))
-lines(sims_svar$mean, col = "red")
-lines(sims_lvar$mean, col = "blue")
+ggplot(data = sim_pvalues, aes(x = sample_size, y = p_value, group = std_dev, color = std_dev)) +
+  clean_theme + 
+  ggtitle("P-value as sample size varies") +
+  xlab("Sample Size") + ylab("P-value") +
+  ylim(0,1) + 
+  scale_color_manual(values=c("#C97FB3", "#5880C1","#00A088","#E9546F"), name = "sd") +
+  geom_line(size = 1)
 ```
+Heatmap.
+
+```{r}
+sizes <- seq(10, 3e3, by = 10)
+sd_value <- seq(1, 20, by = 1)
+sim_pvalues_heat <- list()
+i <- 1
+for (N in sizes) {
+  for (s in sd_value) {
+    pvalue <- c()
+    for (n in 1:100) {
+      x <- rnorm(N, 10, s)
+      y <- rnorm(N, 10.5, s)
+      nr_wttest <- welch_ttest(x, y)
+      pvalue[n] <- nr_wttest$pvalue
+    }
+    sim_pvalues_heat[[i]] <- c(sample_size = N, std_dev = s, p_value = mean(pvalue))
+    i <- i + 1
+  }
+}
+sim_pvalues_heat <- do.call("rbind", sim_pvalues_heat)
+sim_pvalues_heat <- data.frame(sim_pvalues_heat)
+# sim_pvalues_heat$std_dev <- factor(sim_pvalues_heat$std_dev)
+```
+
+```{r}
+ggplot(data = sim_pvalues_heat, aes(x = sample_size, y = std_dev, fill = p_value)) +
+  clean_theme +
+  ggtitle("P-values by sample size and variance") +
+  xlab("Sample Size") + ylab("Standard Deviation") +
+  scale_fill_gradientn(colors = c("#003791","#99afd3")) +
+  geom_raster() 
+```
+
+Delete next two paragraphs.
 
 We come to a similar conclusion. P-values tend to decrease as sample sizes increase. This is behavior is intended of p-values, and the practitioner should be aware of it when making inferences.
+
+## Alternative Inference
+
+Since p-values can be misleading it is a good perform alternative inference. the approaches discussed here are Bayesian appraoches.
+
+### Overlap coefficient
+
+### Bhattacharyya coefficient
+
+### K-L Divergence
+
+The approach more of a parametric aproach compared to the the previous two.
+

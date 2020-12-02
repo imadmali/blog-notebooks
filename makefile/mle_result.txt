@@ -1,0 +1,11 @@
+Timestamp: 2020-11-26 01:09:35.470648
+fun: 14.3932821989513
+jac: [1.59872117e-06 8.70414857e-06]
+nfev: 60
+njev: 20
+nit: 16
+status: 0
+message: b'CONVERGENCE: NORM_OF_PROJECTED_GRADIENT_<=_PGTOL'
+x: [3.11212005 1.02059943]
+success: True
+hess_inv: <2x2 LbfgsInvHessProduct with dtype=float64>
